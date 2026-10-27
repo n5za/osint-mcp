@@ -52,7 +52,7 @@ def api_key(*names: str) -> str | None:
     for name in names:
         for env_name in (f"{name.upper()}_API_KEY", f"{name.upper()}_KEY", name.upper()):
             value = os.environ.get(env_name)
-            if value:
+            if value and value.strip():
                 return value.strip()
     try:
         with open(KEYS_PATH, "r", encoding="utf-8") as fh:
@@ -63,7 +63,7 @@ def api_key(*names: str) -> str | None:
         return None
     for name in names:
         value = stored.get(name.lower())
-        if value:
+        if value and str(value).strip():
             return str(value).strip()
     return None
 
