@@ -9,7 +9,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from .common import clip, guarded, jsonable, request, utcnow
+from .common import guarded, jsonable, request, utcnow
 
 
 def _b64url(segment: str) -> bytes:
@@ -32,7 +32,7 @@ async def jwt_decode(token: str) -> dict:
     try:
         header = json.loads(_b64url(parts[0]))
         payload = json.loads(_b64url(parts[1]))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"ok": False, "error": f"decode failed: {exc}"}
 
     now = utcnow().timestamp()
@@ -86,7 +86,7 @@ def _to_decimal(values, ref: str) -> float | None:
         if str(ref).upper() in ("S", "W"):
             result = -result
         return round(result, 8)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -97,7 +97,8 @@ async def image_exif(source: str) -> dict:
     GPS coordinates are converted to decimal degrees when present. Useful for
     geolocating photos and checking whether metadata was stripped.
     """
-    from PIL import ExifTags, Image as PILImage
+    from PIL import ExifTags
+    from PIL import Image as PILImage
 
     path = None
     temporary = False
@@ -130,14 +131,14 @@ async def image_exif(source: str) -> dict:
             lon = _to_decimal(gps_ifd.get(4), gps_ifd.get(3, ""))
             if lat is not None and lon is not None:
                 gps["decimal"] = {"lat": lat, "lon": lon, "maps": f"https://maps.google.com/?q={lat},{lon}"}
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         exif_ifd = {}
         try:
             for key, value in exif.get_ifd(0x8769).items():
                 exif_ifd[ExifTags.TAGS.get(key, str(key))] = jsonable(value)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         return {
@@ -157,3 +158,93 @@ async def image_exif(source: str) -> dict:
                 os.unlink(path)
             except OSError:
                 pass
+
+
+@guarded
+async def doctor() -> dict:
+    """Self-diagnostic: python deps, API keys, browser, database, and guard state.
+
+    Run this first when a tool behaves unexpectedly. Shows which providers are
+    keyless vs key-gated, whether Chromium is launchable, and where case data lives.
+    """
+
+    from . import browser_tools, case_tools
+    from .common import allow_private, api_key
+
+    checks: list[dict] = []
+
+    def check(name: str, state: str, detail: str = "") -> None:
+        checks.append({"name": name, "state": state, "detail": detail})
+
+    # Python + core deps
+    import sys
+
+    check("python", "ok" if sys.version_info >= (3, 10) else "fail",
+          f"{sys.version.split()[0]} (needs 3.10+)")
+    for module_name, label in (
+        ("httpx", "httpx"), ("dns.resolver", "dnspython"), ("bs4", "beautifulsoup4"),
+        ("mcp", "mcp"), ("PIL", "pillow"), ("playwright", "playwright"),
+    ):
+        try:
+            __import__(module_name)
+            check(label, "ok")
+        except Exception as exc:
+            check(label, "fail", str(exc))
+
+    # OpenCV (optional [image] extra)
+    try:
+        import cv2  # noqa: F401
+
+        check("opencv (QR/image)", "ok")
+    except Exception:
+        check("opencv (QR/image)", "optional-missing",
+              "pip install 'osint-mcp[image]' to enable QR decode + image preprocessing")
+
+    # Browser
+    chrome = browser_tools._chrome_path()
+    check("chromium/chrome", "ok" if chrome else "fail",
+          chrome or "install playwright chromium: playwright install chromium")
+    check("browser headless", "ok", "OSINT_HEADLESS=" + os.environ.get("OSINT_HEADLESS", "1"))
+
+    # API keys: which providers are configured
+    for provider, purpose in (
+        ("github", "github_search, higher rate limits"),
+        ("hibp", "breach_check, stealer_log_check, domain_breach_exposure"),
+        ("otx", "otx_domain"),
+        ("virustotal", "virustotal_report"),
+        ("greynoise", "greynoise_ip"),
+        ("urlhaus", "urlhaus_lookup"),
+        ("tineye", "case_image_reverse (paid API)"),
+    ):
+        check(f"key:{provider}", "ok" if api_key(provider) else "keyless", purpose)
+
+    # Case database
+    db_path = case_tools._db_path()
+    db_ok = True
+    detail = str(db_path)
+    try:
+        with case_tools._db() as db:
+            db.execute("SELECT 1").fetchone()
+            fts = db.execute("SELECT count(*) FROM sqlite_master WHERE name='case_fts'").fetchone()[0]
+        detail += f" (fts={'on' if fts else 'fallback'})"
+    except Exception as exc:
+        db_ok = False
+        detail = str(exc)
+    check("case database", "ok" if db_ok else "fail", detail)
+
+    # Safety guards
+    check("ssrf guard", "active" if not allow_private() else "DISABLED",
+          "blocks private/loopback targets" if not allow_private()
+          else "OSINT_ALLOW_PRIVATE=1 - authorized lab use only")
+    from .common import _CACHE, CACHE_MAX_ENTRIES
+
+    check("cache", "ok", f"entries={len(_CACHE)}/{CACHE_MAX_ENTRIES}")
+
+    failures = [item for item in checks if item["state"] == "fail"]
+    return {
+        "ok": not failures,
+        "checks": checks,
+        "fail_count": len(failures),
+        "summary": "ready" if not failures else f"{len(failures)} check(s) failed",
+        "checked_at": utcnow().isoformat(timespec="seconds"),
+    }

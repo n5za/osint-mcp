@@ -32,21 +32,21 @@ def _resolve(name: str, rtype: str) -> list:
     try:
         answer = dns.resolver.resolve(name, rtype, lifetime=7)
         return list(answer)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
 def _txt(name: str) -> list[str]:
     try:
         answer = dns.resolver.resolve(name, "TXT", lifetime=7)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
     records: list[str] = []
     for rdata in answer:
         try:
             chunks = [chunk.decode("utf-8", "replace") for chunk in rdata.strings]
             records.append("".join(chunks))
-        except Exception:  # noqa: BLE001
+        except Exception:
             records.append(str(rdata).strip('"'))
     return records
 
@@ -63,7 +63,7 @@ def _tags(record: str) -> dict[str, str]:
 def _rsa_bits(p_value: str) -> int | None:
     try:
         der = base64.b64decode(p_value, validate=False)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     match = re.search(rb"\x02\x82(..)", der, re.S)
     if match:
@@ -181,7 +181,7 @@ def _caa_summary(domain: str) -> dict:
                     "value": record.value.decode("utf-8", "replace") if isinstance(record.value, bytes) else str(record.value),
                 }
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             entries.append({"raw": str(record)})
     return {"present": bool(entries), "records": entries}
 
@@ -241,7 +241,7 @@ async def _mta_sts_policy(domain: str) -> dict:
             "enforced": policy.get("mode") == "enforce",
             "raw": clip(response.text, 800),
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"url": url, "present": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -285,7 +285,7 @@ async def email_security(domain: str) -> dict:
                     "host": str(record.exchange).rstrip("."),
                 }
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             mx.append({"raw": str(record)})
     mx.sort(key=lambda item: item.get("priority", 9999))
 

@@ -13,8 +13,8 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import httpx
-from PIL import Image
 from mcp.server.fastmcp import Image as MCPImage
+from PIL import Image
 
 from .case_tools import _case_id, _db, _db_path, _entity, _source
 from .common import api_key, guarded, request, utcnow

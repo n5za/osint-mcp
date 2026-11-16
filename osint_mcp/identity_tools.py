@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import re
 
-from .common import api_key, clip, guarded, request
+from .common import api_key, guarded, request
 from .dns_tools import dns_lookup
 
 SITES: dict[str, dict] = {
@@ -77,13 +77,13 @@ async def username_search(username: str, sites: str = "", timeout: float = 12.0)
                     headers={"Accept": "text/html,application/json;q=0.9,*/*;q=0.8"},
                     follow_redirects=True,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 blocked.append({"site": name, "reason": f"{type(exc).__name__}"})
                 return
 
         status = response.status_code
         body = response.text or ""
-        if status in (403, 429, 503) or "cloudflare" in body.lower()[:2000] and status != 200:
+        if status in (403, 429, 503) or ("cloudflare" in body.lower()[:2000] and status != 200):
             blocked.append({"site": name, "status": status, "reason": "blocked/challenge"})
             return
 
@@ -99,9 +99,7 @@ async def username_search(username: str, sites: str = "", timeout: float = 12.0)
         elif kind == "absent":
             if status == 200 and marker.lower() not in body.lower():
                 found.append({"site": name, "url": url, "status": status})
-            elif status == 200:
-                not_found.append(name)
-            elif status == 404:
+            elif status == 200 or status == 404:
                 not_found.append(name)
             else:
                 blocked.append({"site": name, "status": status, "reason": "ambiguous"})
@@ -189,7 +187,7 @@ async def email_intel(email: str) -> dict:
             f"https://www.gravatar.com/avatar/{gravatar_hash}?d=404&s=1", timeout=15.0
         )
         gravatar = gravatar_response.status_code == 200
-    except Exception:  # noqa: BLE001
+    except Exception:
         gravatar = False
 
     breaches = None
@@ -213,7 +211,7 @@ async def email_intel(email: str) -> dict:
                 ]
             elif breach_response.status_code == 404:
                 breaches = []
-        except Exception:  # noqa: BLE001
+        except Exception:
             breaches = None
 
     return {

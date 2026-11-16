@@ -4,19 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "osint-mcp"
-version = "1.3.0"
-description = "An 86-tool OSINT MCP server with a private evidence graph, image investigation, and person dossiers."
+version = "2.0.0"
+description = "An 88-tool OSINT MCP server with a private evidence graph, image investigation, and person dossiers."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "n5za" }]
 keywords = ["osint", "recon", "mcp", "model-context-protocol", "security", "threat-intelligence"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -25,20 +25,35 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = [
-    "mcp>=1.2.0",
+    "mcp>=1.2.0,<2",
     "httpx>=0.27.0",
     "dnspython>=2.4.0",
     "beautifulsoup4>=4.12.0",
     "cryptography>=42.0.0",
     "playwright>=1.40.0",
     "pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+image = [
     "numpy>=1.26.0",
     "opencv-python>=4.9.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "respx>=0.21.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+    "types-beautifulsoup4",
+    "numpy>=1.26.0",
+    "opencv-python-headless>=4.9.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/n5za/osint-mcp"
 Issues = "https://github.com/n5za/osint-mcp/issues"
+Changelog = "https://github.com/n5za/osint-mcp/blob/main/CHANGELOG.md"
+Security = "https://github.com/n5za/osint-mcp/blob/main/SECURITY.md"
 
 [project.scripts]
 osint-mcp = "osint_mcp.__main__:main"
@@ -48,3 +63,43 @@ include = ["osint_mcp*"]
 
 [tool.setuptools.package-data]
 osint_mcp = ["data/*.txt"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "SIM", # simplify
+    "C4",  # comprehensions
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501",    # line length handled by formatter
+    "SIM105",  # contextlib.suppress is slower than try/except/pass
+    "SIM117",  # nested with is often clearer in async code
+    "B904",    # raise-from not enforced (error_result pattern)
+    "RUF001",  # string may contain ambiguous unicode (data files)
+    "RUF002",  # docstring ambiguous unicode
+    "RUF003",  # comment ambiguous unicode
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "SIM115"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = false
+exclude = ["build", "dist"]

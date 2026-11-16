@@ -1,0 +1,15 @@
+.github
+.venv
+venv
+__pycache__
+*.pyc
+tests
+shots
+cases
+*.sqlite3*
+keys.json
+.env*
+dist
+build
+docs
+.DS_Store

@@ -2,11 +2,34 @@
 
 ![A large black and white eye, the OSINT MCP project banner](docs/eye-banner.png)
 
-**86 tools for open-source intelligence and authorized reconnaissance, exposed through the Model Context Protocol (MCP).** Investigate domains, IPs, websites, public accounts, breach metadata, threat feeds, and images from one stdio server. Keep a private evidence graph for investigations you revisit.
+**88 tools for open-source intelligence and authorized reconnaissance, exposed through the Model Context Protocol (MCP).** Investigate domains, IPs, websites, public accounts, breach metadata, threat feeds, and images from one stdio server. Keep a private evidence graph for investigations you revisit.
 
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-111111?logo=python&logoColor=white) ![86 tools](https://img.shields.io/badge/Tools-86-111111) ![License MIT](https://img.shields.io/badge/License-MIT-111111)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-111111?logo=python&logoColor=white) ![88 tools](https://img.shields.io/badge/Tools-88-111111) ![License MIT](https://img.shields.io/badge/License-MIT-111111) ![CI](https://github.com/n5za/osint-mcp/actions/workflows/ci.yml/badge.svg)
 
 Most tools work without an API key. Optional keys add coverage from services such as HIBP, VirusTotal, and OTX. Browser tools use Playwright; the rest can run without a browser.
+
+## Install in one command
+
+```bash
+# Run without installing (any MCP client that supports uvx/pipx):
+uvx osint-mcp            # or: pipx run osint-mcp
+
+# Or install for real:
+pipx install osint-mcp
+```
+
+Point your MCP client's stdio command at `uvx osint-mcp` (or the installed `osint-mcp` binary). Docker alternative:
+
+```bash
+docker build -t osint-mcp .
+docker run -i --rm -v osint-cases:/home/osint/.local/share/osint-mcp osint-mcp
+```
+
+Verify your environment (keys, Chromium, database, guards):
+
+```bash
+osint-mcp doctor
+```
 
 ## Easy install with your AI agent
 
@@ -24,7 +47,7 @@ server.py. Preserve my existing MCP servers and settings.
 
 Install Playwright Chromium for the browser and deep-research tools. Verify that the
 server starts, that the client can discover its tools, and that the expected tool
-count is 86. If this client needs a restart or reload, tell me exactly what to do.
+count is 88. If this client needs a restart or reload, tell me exactly what to do.
 Do not put API keys in the repository or in the MCP configuration. Report the install
 path, the config file you changed, and the verification result.
 ```
@@ -53,7 +76,7 @@ The server speaks **MCP over stdio**. Connect it to a client; running `python se
 
 ### Connect an MCP client
 
-Use the absolute path to the virtual environment's Python binary. This lets the client start the server without shell activation.
+Use the absolute path to the virtual environment's Python binary. This lets the client start the server without shell activation. If you installed from PyPI, replace both values with a single command: `"command": "uvx", "args": ["osint-mcp"]`.
 
 <details>
 <summary>Claude Desktop / Cursor</summary>
@@ -133,7 +156,7 @@ print(len(asyncio.run(mcp.list_tools())))
 PY
 ```
 
-Expected output: `86`. To try a keyless tool without an MCP client:
+Expected output: `88`. To try a keyless tool without an MCP client:
 
 ```bash
 python - <<'PY'
@@ -144,6 +167,8 @@ PY
 ```
 
 ## Choose a workflow
+
+The full generated reference lives in [`docs/TOOL_CATALOG.md`](docs/TOOL_CATALOG.md). Highlights:
 
 | Goal | Start with | Continue with |
 |---|---|---|
@@ -171,8 +196,9 @@ The case tools let you keep a separate local knowledge graph for each investigat
 | `case_capture(case, result_json)` | Import the `pages` from a prior research result. |
 | `case_note(case, entity, kind, observation, source_url)` | Save a person, place, event, or organization with a short observation. |
 | `case_add_fact(case, subject, predicate, object_name, ...)` | Add a relationship, ideally with `source_url` and an evidence excerpt. |
-| `case_search(case, query)` | Find entities, source titles/URLs, observations, and facts. |
+| `case_search(case, query)` | Find entities, source titles/URLs, observations, and facts (FTS5 full-text). |
 | `case_graph(case, entity)` | Resume the whole case or inspect one entity's connections. |
+| `case_export(case, out_path)` | Export the whole case as portable JSON (inline or file). |
 
 For example: create a case named `Missing painting`; run `case_research` for the incident; save a note about Amina, then add the relationship `Amina — visited — Rabat` with the page URL and supporting excerpt; later use `case_graph("Missing painting", "Amina")` to resume. Its `nodes` and `edges` fields are ready for a graph viewer. A page mentioning Amina and Rabat stores two mentions, **not** an invented visit. Facts without both a source and evidence stay marked `lead`; even sourced facts are claims to verify, not ground truth. This is especially important for questions about who acted and why.
 
@@ -257,7 +283,7 @@ The names below are the registered MCP tool names. Arguments and result schemas 
 | `browser_open`, `browser_extract`, `browser_screenshot`, `browser_eval` | Render a page, extract content, capture a PNG, or evaluate JavaScript. |
 | `deep_osint`, `browser_search`, `browser_crawl`, `source_crosscheck` | Bounded browser research and source comparison. |
 | `image_analyze`, `image_exif` | Image hashes, metadata, optional OCR/QR, and EXIF. |
-| `jwt_decode`, `hash_text` | Decode JWT fields and calculate text hashes locally. |
+| `jwt_decode`, `hash_text`, `doctor` | Decode JWT fields, hash text locally, and self-diagnose the installation. |
 
 `browser_screenshot` returns image content; most other tools return structured data. A source error or missing key is reported in the result, so a failed lookup is not treated as a negative finding.
 
@@ -292,7 +318,25 @@ Never commit real keys. See the provider's own documentation for access requirem
 | `OSINT_HEADLESS` | `1` | Set `0` to show a browser window. |
 | `OSINT_SHOTS_DIR` | `./shots` | Screenshot output directory. |
 | `OSINT_KEYS_FILE` | `~/.config/osint-mcp/keys.json` | Alternate local key file. |
-| `OSINT_CASES_DB` | `~/.local/share/osint-mcp/cases.sqlite3` | Local case graph database and nearby person/image folders. |
+| `OSINT_CASES_DB` | `~/.local/share/osint-mcp/cases.sqlite3` | Local case graph database (WAL mode) and nearby person/image folders. |
+| `OSINT_LOG_LEVEL` | `WARNING` | stderr log verbosity (`DEBUG`, `INFO`, ...) for client-side debugging. |
+| `OSINT_CACHE_MAX` | `512` | Max entries in the bounded response cache. |
+| `OSINT_ALLOW_PRIVATE` | `0` | Set `1` to allow requests to private/loopback ranges (authorized lab use only). |
+
+### Reliability behaviour (v2)
+
+- HTTP requests reuse a pooled connection client, retry idempotent GETs on 429/5xx with backoff, and honour `Retry-After`.
+- Failed tools return structured errors: `error` (human message), `error_code`, and `retryable`.
+- Outbound HTTP and browser navigation pass an SSRF guard that resolves the host and blocks private/loopback/link-local addresses, including across redirects. This is accident prevention, not a sandbox.
+- The case database runs in WAL mode with an FTS5 full-text index (automatic LIKE fallback on SQLite builds without FTS5).
+
+### Optional image extra
+
+`image_analyze` hashes and EXIF work out of the box. QR decoding and image preprocessing need OpenCV:
+
+```bash
+pip install "osint-mcp[image]"     # or: pipx install "osint-mcp[image]"
+```
 
 Public sources can rate-limit, block, or return incomplete data. A DNS resolver mismatch is not automatically a misconfiguration. Breach results may be stale or contain false positives. Browser crawling and some composite tools make multiple requests, so set their limits to fit your scope. `image_analyze` processes images locally for hashes, EXIF, OCR, and QR; reverse-image search links are generated for remote URLs.
 

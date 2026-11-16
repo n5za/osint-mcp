@@ -5,10 +5,6 @@ from __future__ import annotations
 import asyncio
 
 from .common import guarded, normalize_target, utcnow
-from .dns_tools import crtsh_subdomains, dns_lookup
-from .domain_tools import domain_whois, robots_txt, security_txt, ssl_certificate
-from .ip_tools import asn_lookup, ip_intel, port_scan, reverse_ip
-from .dns_tools import reverse_dns
 from .discovery_tools import (
     api_discovery,
     commoncrawl_urls,
@@ -17,7 +13,10 @@ from .discovery_tools import (
     urlscan_search,
     well_known,
 )
+from .dns_tools import crtsh_subdomains, dns_lookup, reverse_dns
+from .domain_tools import domain_whois, robots_txt, security_txt, ssl_certificate
 from .intel_tools import threat_reputation
+from .ip_tools import asn_lookup, ip_intel, port_scan, reverse_ip
 from .mail_tools import email_security
 from .web_tools import http_headers_audit, tech_fingerprint
 
@@ -55,7 +54,7 @@ async def recon_domain(domain: str) -> dict:
     ]
     raw = await asyncio.gather(*coros, return_exceptions=True)
     results = {}
-    for key, value in zip(keys, raw):
+    for key, value in zip(keys, raw, strict=False):
         results[key] = value if not isinstance(value, BaseException) else {"ok": False, "error": str(value)}
 
     dns_result = results["dns"] if isinstance(results["dns"], dict) else {}
@@ -108,7 +107,7 @@ async def recon_ip(ip: str) -> dict:
         return_exceptions=True,
     )
     results = {}
-    for key, value in zip(keys, raw):
+    for key, value in zip(keys, raw, strict=False):
         results[key] = value if not isinstance(value, BaseException) else {"ok": False, "error": str(value)}
 
     intel = results["intel"] if isinstance(results["intel"], dict) else {}
@@ -135,7 +134,7 @@ async def recon_ip(ip: str) -> dict:
 async def _safe(coro, timeout: float, label: str):
     try:
         return await asyncio.wait_for(coro, timeout=timeout)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"ok": False, "error": f"{label}: {type(exc).__name__}: {exc}"}
 
 
@@ -175,7 +174,7 @@ async def recon_deep(domain: str, limit: int = 100) -> dict:
     ]
     raw = await asyncio.gather(*coros, return_exceptions=True)
     results = {}
-    for key, value in zip(keys, raw):
+    for key, value in zip(keys, raw, strict=False):
         results[key] = value if not isinstance(value, BaseException) else {"ok": False, "error": str(value)}
 
     subdomains = results["subdomains"] if isinstance(results["subdomains"], dict) else {}

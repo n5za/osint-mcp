@@ -33,6 +33,42 @@ PRESETS = {
 TLS_PORTS = {443, 465, 636, 993, 995, 8443, 9443, 2376}
 
 
+def _grab_tls_cert_sync(host: str, port: int, timeout: float) -> dict | None:
+    """Best-effort TLS handshake for the port-scan probe: leaf CN, issuer, expiry."""
+    import ssl as _ssl
+    from datetime import datetime, timezone
+
+    try:
+        context = _ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = _ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=max(0.5, timeout)) as sock:
+            sock.settimeout(max(0.5, timeout))
+            with context.wrap_socket(sock, server_hostname=host) as tls:
+                der = tls.getpeercert(binary_form=True)
+                if not der:
+                    return None
+                # cryptography is a hard dependency; import lazily to keep the scan loop light
+                from cryptography import x509
+
+                cert = x509.load_der_x509_certificate(der)
+                try:
+                    not_after = cert.not_valid_after_utc
+                except AttributeError:
+                    not_after = cert.not_valid_after.replace(tzinfo=timezone.utc)
+                days_left = (not_after - datetime.now(timezone.utc)).days
+                return {
+                    "subject": cert.subject.rfc4514_string(),
+                    "issuer": cert.issuer.rfc4514_string(),
+                    "not_after": not_after.isoformat(timespec="seconds"),
+                    "days_remaining": days_left,
+                    "expired": days_left < 0,
+                    "self_signed": cert.subject == cert.issuer,
+                }
+    except Exception:
+        return None
+
+
 def _parse_ports(spec: str) -> list[int]:
     value = (spec or "top20").strip().lower()
     if value in PRESETS:
@@ -42,14 +78,17 @@ def _parse_ports(spec: str) -> list[int]:
         chunk = chunk.strip()
         if not chunk:
             continue
-        if "-" in chunk:
-            start, end = chunk.split("-", 1)
-            low, high = int(start), int(end)
-            if low > high:
-                low, high = high, low
-            ports.update(range(low, high + 1))
-        else:
-            ports.add(int(chunk))
+        try:
+            if "-" in chunk:
+                start, end = chunk.split("-", 1)
+                low, high = int(start), int(end)
+                if low > high:
+                    low, high = high, low
+                ports.update(range(low, high + 1))
+            else:
+                ports.add(int(chunk))
+        except ValueError:
+            continue  # skip malformed tokens instead of failing the whole scan
     return sorted(port for port in ports if 0 < port <= 65535)
 
 
@@ -59,7 +98,7 @@ async def _http_get_json(url: str, timeout: float = 15.0):
         return None
     try:
         return response.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -132,7 +171,7 @@ async def asn_lookup(target: str) -> dict:
         except ValueError:
             try:
                 host = socket.gethostbyname(value)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return {"ok": False, "error": f"cannot resolve {value}: {exc}"}
         geo = await _http_get_json(f"http://ip-api.com/json/{host}?fields=status,as,asname,isp,org,query,country")
         if not geo or geo.get("status") != "success":
@@ -236,23 +275,33 @@ async def port_scan(
                     try:
                         chunk = await asyncio.wait_for(reader.read(256), timeout=0.8)
                         banner = chunk.decode("utf-8", "replace").strip()
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         banner = ""
-                open_ports.append(
-                    {
-                        "port": port,
-                        "service": port_service(port),
-                        "banner": clip(banner, 200),
-                    }
-                )
-            except Exception:  # noqa: BLE001
+                entry = {
+                    "port": port,
+                    "service": port_service(port),
+                    "banner": clip(banner, 200),
+                }
+                if port in TLS_PORTS:
+                    writer.close()  # release the plain socket; TLS grabs its own connection
+                    await writer.wait_closed()
+                    writer = None
+                    loop = asyncio.get_running_loop()
+                    cert = await asyncio.wait_for(
+                        loop.run_in_executor(None, _grab_tls_cert_sync, target, port, max(1.0, float(timeout))),
+                        timeout=max(2.0, float(timeout) + 1.0),
+                    )
+                    if cert:
+                        entry["tls_cert"] = cert
+                open_ports.append(entry)
+            except Exception:
                 return
             finally:
                 if writer is not None:
                     try:
                         writer.close()
                         await writer.wait_closed()
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
 
     await asyncio.gather(*(probe(port) for port in port_list))
