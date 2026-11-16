@@ -42,6 +42,11 @@ def _db():
         if os.name == "posix":
             os.chmod(path, 0o600)
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=5000")
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")  # concurrent readers + crash safety
+        except sqlite3.DatabaseError:
+            pass
         connection.executescript("""
             CREATE TABLE IF NOT EXISTS cases (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -107,10 +112,62 @@ def _db():
                 case_id, COALESCE(source_id,-1), COALESCE(entity_id,-1), text
             );
         """)
+        _ensure_fts(connection)
         yield connection
         connection.commit()
     finally:
         connection.close()
+
+
+# ------------------------------------------------------------- FTS5 full-text
+def _ensure_fts(db: sqlite3.Connection) -> None:
+    """Create FTS5 index + write triggers once; backfill existing databases.
+
+    Version history: 0 = legacy (pre-2.0), 2 = FTS5 index present.
+    Falls back silently when the SQLite build lacks FTS5.
+    """
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if version >= 2:
+        return
+    try:
+        db.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS case_fts USING fts5(
+                text, case_id UNINDEXED, kind UNINDEXED, ref_id UNINDEXED
+            );
+            CREATE TRIGGER IF NOT EXISTS trg_entities_fts AFTER INSERT ON entities BEGIN
+                INSERT INTO case_fts(case_id, kind, ref_id, text)
+                VALUES(new.case_id, 'entity', new.id, new.name);
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_observations_fts AFTER INSERT ON observations BEGIN
+                INSERT INTO case_fts(case_id, kind, ref_id, text)
+                VALUES(new.case_id, 'observation', new.id, new.text);
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_facts_fts AFTER INSERT ON facts BEGIN
+                INSERT INTO case_fts(case_id, kind, ref_id, text) VALUES(
+                    new.case_id, 'fact', new.id,
+                    (SELECT name FROM entities WHERE id=new.subject_id) || ' ' || new.predicate
+                    || ' ' || (SELECT name FROM entities WHERE id=new.object_id)
+                    || ' ' || new.evidence);
+            END;
+        """)
+        db.execute("DELETE FROM case_fts")
+        db.execute("INSERT INTO case_fts(case_id, kind, ref_id, text) SELECT case_id, 'entity', id, name FROM entities")
+        db.execute("INSERT INTO case_fts(case_id, kind, ref_id, text) SELECT case_id, 'observation', id, text FROM observations")
+        db.execute("""INSERT INTO case_fts(case_id, kind, ref_id, text)
+            SELECT f.case_id, 'fact', f.id,
+                (SELECT name FROM entities WHERE id=f.subject_id) || ' ' || f.predicate
+                || ' ' || (SELECT name FROM entities WHERE id=f.object_id) || ' ' || f.evidence
+            FROM facts f""")
+        db.execute("PRAGMA user_version=2")
+    except sqlite3.OperationalError:
+        # FTS5 unavailable: searches fall back to LIKE
+        pass
+
+
+def _fts_match_query(query: str) -> str:
+    """Turn a free-text query into a safe FTS5 MATCH expression (AND of quoted terms)."""
+    words = [word for word in re.findall(r"[\wÀ-ÿ]+", query) if word]
+    return " AND ".join('"' + word + '"' for word in words[:8])
 
 
 def _case_id(db: sqlite3.Connection, case: str) -> str:
@@ -324,14 +381,75 @@ async def case_research(case: str, query: str, max_pages: int = 6) -> dict:
     return {"ok": True, "case_id": case_id, "capture": counts, "research": result}
 
 
+def _fts_search(db: sqlite3.Connection, case_id: str, match_query: str, limit: int) -> dict | None:
+    """FTS5-backed search across entities, observations, and facts."""
+    try:
+        hits = db.execute(
+            "SELECT kind, ref_id FROM case_fts WHERE case_id=? AND case_fts MATCH ? ORDER BY rank LIMIT ?",
+            (case_id, match_query, limit * 3),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    entity_ids: list[int] = []
+    observation_ids: list[int] = []
+    fact_ids: list[int] = []
+    for hit in hits:
+        target_list = {"entity": entity_ids, "observation": observation_ids, "fact": fact_ids}.get(hit["kind"])
+        if target_list is not None and len(target_list) < limit:
+            target_list.append(hit["ref_id"])
+    result: dict = {"entities": [], "observations": [], "facts": []}
+    if entity_ids:
+        placeholders = ",".join("?" for _ in entity_ids)
+        result["entities"] = [_row(r) for r in db.execute(
+            f"SELECT id,kind,name FROM entities WHERE id IN ({placeholders})", entity_ids).fetchall()]
+    if observation_ids:
+        placeholders = ",".join("?" for _ in observation_ids)
+        result["observations"] = [_row(r) for r in db.execute(
+            f"""SELECT o.id, o.text, s.url AS source_url FROM observations o
+            LEFT JOIN sources s ON s.id=o.source_id WHERE o.id IN ({placeholders})""",
+            observation_ids).fetchall()]
+    if fact_ids:
+        placeholders = ",".join("?" for _ in fact_ids)
+        result["facts"] = [_row(r) for r in db.execute(
+            f"""SELECT f.id, a.name AS subject, f.predicate, b.name AS object,
+            f.status, f.evidence, src.url AS source_url FROM facts f
+            JOIN entities a ON a.id=f.subject_id JOIN entities b ON b.id=f.object_id
+            LEFT JOIN sources src ON src.id=f.source_id WHERE f.id IN ({placeholders})""",
+            fact_ids).fetchall()]
+    return result
+
+
 @guarded
 async def case_search(case: str, query: str, limit: int = 30) -> dict:
-    """Search a case's entities, sources, observations, and relationship text."""
+    """Search a case's entities, sources, observations, and relationship text.
+
+    Uses an FTS5 full-text index when available (relevance-ranked, word-based
+    matching); falls back to substring LIKE matching otherwise.
+    """
     query = _required(query, "query", 200)
     limit = max(1, min(int(limit), 100))
-    needle = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     with _db() as db:
         case_id = _case_id(db, case)
+        match_query = _fts_match_query(query)
+        if match_query:
+            fts_result = _fts_search(db, case_id, match_query, limit)
+            if fts_result is not None:
+                # sources are still substring-matched (URLs/titles are not in FTS)
+                needle = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                sources = db.execute(
+                    "SELECT id,url,title,checked_at FROM sources WHERE case_id=? AND (url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\') LIMIT ?",
+                    (case_id, needle, needle, limit),
+                ).fetchall()
+                return {
+                    "ok": True,
+                    "mode": "fts",
+                    "query": query,
+                    "entities": fts_result["entities"][:limit],
+                    "sources": [_row(r) for r in sources],
+                    "observations": fts_result["observations"][:limit],
+                    "facts": fts_result["facts"][:limit],
+                }
+        needle = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         entities = db.execute("SELECT id,kind,name FROM entities WHERE case_id=? AND name LIKE ? ESCAPE '\\' LIMIT ?",
                               (case_id, needle, limit)).fetchall()
         sources = db.execute("SELECT id,url,title,checked_at FROM sources WHERE case_id=? AND (url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\') LIMIT ?",
@@ -345,7 +463,7 @@ async def case_search(case: str, query: str, limit: int = 30) -> dict:
             LEFT JOIN sources src ON src.id=f.source_id WHERE f.case_id=? AND
             (a.name LIKE ? ESCAPE '\\' OR b.name LIKE ? ESCAPE '\\' OR f.predicate LIKE ? ESCAPE '\\')
             LIMIT ?""", (case_id, needle, needle, needle, limit)).fetchall()
-        return {"ok": True, "entities": [_row(r) for r in entities],
+        return {"ok": True, "mode": "like", "query": query, "entities": [_row(r) for r in entities],
                 "sources": [_row(r) for r in sources], "observations": [_row(r) for r in observations],
                 "facts": [_row(r) for r in facts]}
 
@@ -452,3 +570,51 @@ async def case_graph(case: str, entity: str = "", limit: int = 100) -> dict:
                 "mentions": [_row(r) for r in mentions], "observations": [_row(r) for r in observations],
                 "nodes": list(nodes.values()), "edges": edges,
                 "note": "Mentions are co-occurrences, not proof of a relationship."}
+
+
+@guarded
+async def case_export(case: str, out_path: str = "", max_items: int = 5000) -> dict:
+    """Export a full case as portable JSON (entities, sources, observations, facts, image metadata).
+
+    Without out_path the JSON is returned inline; with out_path it is written to a
+    file (JSON, 0o600 on POSIX) and only the path and digest are returned. Binary
+    image files are not embedded; image rows carry their stored paths and hashes.
+    """
+    max_items = max(100, min(int(max_items), 50000))
+    with _db() as db:
+        case_id = _case_id(db, case)
+        case_row = db.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
+        payload = {
+            "schema": "osint-mcp/case-export",
+            "version": 2,
+            "exported_at": utcnow().isoformat(timespec="seconds"),
+            "case": _row(case_row),
+            "sources": [_row(r) for r in db.execute(
+                "SELECT * FROM sources WHERE case_id=? LIMIT ?", (case_id, max_items)).fetchall()],
+            "entities": [_row(r) for r in db.execute(
+                "SELECT * FROM entities WHERE case_id=? LIMIT ?", (case_id, max_items)).fetchall()],
+            "mentions": [_row(r) for r in db.execute(
+                "SELECT * FROM mentions WHERE case_id=? LIMIT ?", (case_id, max_items)).fetchall()],
+            "observations": [_row(r) for r in db.execute(
+                "SELECT * FROM observations WHERE case_id=? LIMIT ?", (case_id, max_items)).fetchall()],
+            "facts": [_row(r) for r in db.execute(
+                "SELECT * FROM facts WHERE case_id=? LIMIT ?", (case_id, max_items)).fetchall()],
+            "images": [_row(r) for r in db.execute(
+                "SELECT id,sha256,dhash,path,original_url,source_id,created_at FROM images WHERE case_id=? LIMIT ?",
+                (case_id, max_items)).fetchall()],
+            "note": "Claims need sources and evidence; mentions are co-occurrences, not proof.",
+        }
+
+    if not out_path:
+        return {"ok": True, "format": "inline", "case_id": case_id, "data": payload}
+
+    path = Path(os.path.expanduser(out_path)).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if os.name == "posix":
+        os.chmod(path, 0o600)
+    import hashlib
+
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {"ok": True, "format": "file", "case_id": case_id, "path": str(path),
+            "sha256": digest, "bytes": path.stat().st_size}

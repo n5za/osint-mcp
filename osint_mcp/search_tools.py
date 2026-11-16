@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 from bs4 import BeautifulSoup
 
-from .common import clip, error_result, guarded, request
+from .common import clip, guarded, request
 
 DORK_CATEGORIES: dict[str, list[str]] = {
     "exposed_files": [
@@ -85,35 +85,23 @@ ENGINES = {
 }
 
 
-@guarded
-async def web_search(query: str, max_results: int = 10) -> dict:
-    """Search the web via DuckDuckGo HTML (keyless) and return titles, URLs and snippets."""
-    response = await request(
-        "https://html.duckduckgo.com/html/",
-        params={"q": query},
-        timeout=25.0,
-    )
-    if response.status_code != 200:
-        return {"ok": False, "error": f"DuckDuckGo HTTP {response.status_code}"}
-
-    if "anomaly" in response.text.lower() or "unusual traffic" in response.text.lower():
-        return {
-            "ok": False,
-            "error": "DuckDuckGo served a bot challenge",
-            "hint": "Retry later, use browser_open on a search URL, or use google_dorks.",
-        }
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    results = []
-    for block in soup.select("div.result"):
-        link = block.select_one("a.result__a")
+def _parse_ddg_html(html: str) -> list[dict]:
+    """Parse DuckDuckGo HTML results with layered selectors (markup-resilient)."""
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[dict] = []
+    # layered selectors across DDG markup variants (combined query is resilient)
+    blocks = soup.select("div.result, div.web-result, article.result")
+    for block in blocks:
+        link = block.select_one("a.result__a") or block.select_one("a.result-link") or block.select_one("h2 a")
         if not link:
             continue
         href = link.get("href", "")
+        if isinstance(href, list):
+            href = href[0] if href else ""
         if "uddg=" in href:
             parsed = parse_qs(urlparse(href).query)
             href = unquote(parsed.get("uddg", [href])[0])
-        snippet_tag = block.select_one(".result__snippet")
+        snippet_tag = block.select_one(".result__snippet") or block.select_one(".result-snippet")
         results.append(
             {
                 "title": link.get_text(" ", strip=True),
@@ -121,15 +109,83 @@ async def web_search(query: str, max_results: int = 10) -> dict:
                 "snippet": snippet_tag.get_text(" ", strip=True) if snippet_tag else "",
             }
         )
-        if len(results) >= max(1, int(max_results)):
-            break
+    return results
+
+
+def _parse_ddg_lite(html: str) -> list[dict]:
+    """Parse the DuckDuckGo Lite fallback page (simpler table markup)."""
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[dict] = []
+    for link in soup.select("a.result-link"):
+        href = link.get("href", "")
+        if isinstance(href, list):
+            href = href[0] if href else ""
+        if "uddg=" in href:
+            parsed = parse_qs(urlparse(href).query)
+            href = unquote(parsed.get("uddg", [href])[0])
+        results.append({"title": link.get_text(" ", strip=True), "url": href, "snippet": ""})
+    if not results:
+        # last-ditch: any anchor under the results table
+        for link in soup.select("table tr a"):
+            href = link.get("href", "")
+            if href.startswith("http") and "duckduckgo.com" not in href:
+                results.append({"title": link.get_text(" ", strip=True), "url": href, "snippet": ""})
+    return results
+
+
+def _blocked_page(text: str) -> bool:
+    lowered = text.lower()
+    return "anomaly" in lowered or "unusual traffic" in lowered or "challenge" in lowered
+
+
+@guarded
+async def web_search(query: str, max_results: int = 10) -> dict:
+    """Search the web (keyless) with automatic engine fallback.
+
+    Tries DuckDuckGo HTML first, then the Lite endpoint. Returns titles, URLs
+    and snippets; failures report which engines were tried.
+    """
+    limit = max(1, min(int(max_results), 30))
+    engines_tried: list[str] = []
+    errors: list[str] = []
+
+    for engine, endpoint, parser in (
+        ("duckduckgo-html", "https://html.duckduckgo.com/html/", _parse_ddg_html),
+        ("duckduckgo-lite", "https://lite.duckduckgo.com/lite/", _parse_ddg_lite),
+    ):
+        engines_tried.append(engine)
+        try:
+            response = await request(endpoint, params={"q": query}, timeout=25.0)
+        except Exception as exc:
+            errors.append(f"{engine}: {type(exc).__name__}: {exc}")
+            continue
+        if response.status_code != 200:
+            errors.append(f"{engine}: HTTP {response.status_code}")
+            continue
+        if _blocked_page(response.text):
+            errors.append(f"{engine}: bot challenge")
+            continue
+        results = parser(response.text)
+        if results:
+            return {
+                "ok": True,
+                "query": query,
+                "count": len(results[:limit]),
+                "engine": engine,
+                "results": results[:limit],
+                "note": None,
+            }
+        errors.append(f"{engine}: no results parsed")
 
     return {
-        "ok": True,
+        "ok": False,
         "query": query,
-        "count": len(results),
-        "results": results,
-        "note": None if results else "No results parsed; DuckDuckGo markup may have changed.",
+        "error": "no search engine responded with results",
+        "error_code": "search_unavailable",
+        "retryable": True,
+        "engines_tried": engines_tried,
+        "details": errors,
+        "hint": "Retry later, or use browser_open on a search URL (browser_search tool).",
     }
 
 
@@ -153,7 +209,7 @@ async def google_dorks(target: str, category: str = "all") -> dict:
         return {
             "ok": False,
             "error": f"unknown category '{category}'",
-            "available": sorted(DORK_CATEGORIES) + ["all"],
+            "available": [*sorted(DORK_CATEGORIES), "all"],
         }
 
     selected = DORK_CATEGORIES if category == "all" else {category: DORK_CATEGORIES[category]}

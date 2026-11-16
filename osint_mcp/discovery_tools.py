@@ -8,7 +8,6 @@ import hashlib
 import ipaddress
 import json
 import re
-import socket
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, urlparse
 
@@ -17,8 +16,6 @@ from bs4 import BeautifulSoup
 
 from .common import (
     api_key,
-    cache_get,
-    cache_set,
     clip,
     ensure_url,
     get_json,
@@ -34,7 +31,7 @@ from .common import (
 def _json_or_none(response):
     try:
         return response.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -135,7 +132,7 @@ async def commoncrawl_urls(domain: str, limit: int = 500, index: str | None = No
     if not crawl_index:
         try:
             data = await get_json("https://index.commoncrawl.org/collinfo.json", timeout=45.0)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {"ok": False, "error": f"could not fetch crawl index list: {exc}"}
         if not isinstance(data, list) or not data:
             return {"ok": False, "error": "Common Crawl returned no indexes"}
@@ -180,7 +177,7 @@ async def commoncrawl_urls(domain: str, limit: int = 500, index: str | None = No
             continue
         try:
             item = json.loads(line)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         url = item.get("url")
         if not url:
@@ -227,7 +224,7 @@ async def _hackertarget_hosts(domain: str) -> tuple[set[str], str | None]:
             if host and "." in host:
                 hosts.add(host)
         return hosts, None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return set(), f"{type(exc).__name__}: {exc}"
 
 
@@ -249,7 +246,7 @@ async def _rapiddns_hosts(domain: str) -> tuple[set[str], str | None]:
                 if host and "." in host and " " not in host:
                     hosts.add(host)
         return hosts, None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return set(), f"{type(exc).__name__}: {exc}"
 
 
@@ -272,7 +269,7 @@ async def _otx_url_hosts(domain: str) -> tuple[set[str], str | None]:
             if host and "." in host:
                 hosts.add(host)
         return hosts, None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return set(), f"{type(exc).__name__}: {exc}"
 
 
@@ -309,7 +306,7 @@ async def passive_subdomains(domain: str, limit: int = 1000, deep: bool = True) 
 
     names = list(jobs)
     results = await asyncio.gather(*(jobs[name] for name in names))
-    for name, (hosts, error) in zip(names, results):
+    for name, (hosts, error) in zip(names, results, strict=False):
         if hosts:
             sources[name] = hosts
         if error:
@@ -346,10 +343,36 @@ SOURCE_MAP_RE = re.compile(r"//[#@]\s*sourceMappingURL=([^\s]+)")
 
 SECRET_PATTERNS = {
     "aws_access_key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    "aws_secret_key_assignment": re.compile(
+        r"""aws[_-]?(?:secret[_-]?)?access[_-]?key[_-]?secret\s*[:=]\s*["'`]([A-Za-z0-9/+=]{40})["'`]""", re.I
+    ),
     "google_api_key": re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"),
+    "google_oauth_client_secret": re.compile(r"\bGOCSPX-[A-Za-z0-9_-]{28,}\b"),
     "github_token": re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
+    "gitlab_token": re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
+    "npm_token": re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"),
     "slack_token": re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b"),
+    "slack_webhook": re.compile(r"\bhttps://hooks\.slack\.com/services/T[A-Za-z0-9_]+/B[A-Za-z0-9_]+/[A-Za-z0-9]{24}\b"),
     "stripe_live_key": re.compile(r"\bsk_live_[0-9a-zA-Z]{20,}\b"),
+    "stripe_webhook_secret": re.compile(r"\bwhsec_[0-9a-zA-Z]{24,}\b"),
+    "twilio_key": re.compile(r"\bSK[0-9a-fA-F]{32}\b"),
+    "sendgrid_key": re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b"),
+    "mailgun_key": re.compile(r"\bkey-[0-9a-zA-Z]{32}\b"),
+    "telegram_bot_token": re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b"),
+    "discord_bot_token": re.compile(r"\b[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}\b"),
+    "openai_key": re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+    "anthropic_key": re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),
+    "supabase_service_key": re.compile(r"\bservice_role\b.*\beyJ[A-Za-z0-9_-]{20,}\.ey", re.I),
+    "azure_connection_string": re.compile(
+        r"""(?:AccountName|AccountKey)=[^;]{4,};(?:AccountName|AccountKey)=[^;]{4,};""", re.I
+    ),
+    "private_key_block": re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY( BLOCK)?-----"),
+    "mongodb_uri": re.compile(r"\bmongodb(?:\+srv)?://[^\s\"'<>]{6,}\b"),
+    "postgres_uri": re.compile(r"\bpostgres(?:ql)?://[^\s\"'<>]{6,}\b"),
+    "mysql_uri": re.compile(r"\bmysql://[^\s\"'<>]{6,}\b"),
+    "amqp_uri": re.compile(r"\bamqps?://[^\s\"'<>]{6,}\b"),
+    "bearer_token": re.compile(r"""[Bb]earer\s+[A-Za-z0-9._~+/-]{20,}"""),
+    "basic_auth_url": re.compile(r"\bhttps?://[A-Za-z0-9._%-]+:[A-Za-z0-9._%-]+@[^\s\"'<>]+\b"),
     "jwt": re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     "generic_assignment": re.compile(
         r"""(?:api[_-]?key|apikey|secret|token|password|passwd|client[_-]?secret)\s*[:=]\s*["'`]([^"'`\s]{8,100})["'`]""",
@@ -475,7 +498,7 @@ async def js_recon(url: str, max_scripts: int = 8, max_bytes: int = 2_000_000) -
                     "content_type": response.headers.get("content-type"),
                     "_body": body,
                 }
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return {"url": script_url, "error": f"{type(exc).__name__}: {exc}"}
 
     fetched = await asyncio.gather(*(fetch_script(script_url) for script_url in deduped[:max_scripts]))
@@ -539,13 +562,35 @@ def _spec_summary(data: dict) -> dict:
     info = data.get("info") or {}
     paths = data.get("paths") or {}
     sample = []
+    methods: set[str] = set()
     if isinstance(paths, dict):
         sample = list(paths.keys())[:12]
+        for operations in list(paths.values())[:40]:
+            if isinstance(operations, dict):
+                for key in operations:
+                    if key.lower() in ("get", "post", "put", "patch", "delete", "head", "options", "trace"):
+                        methods.add(key.lower())
+    servers = []
+    raw_servers = data.get("servers")
+    if isinstance(raw_servers, list):
+        servers = [item.get("url") for item in raw_servers if isinstance(item, dict) and item.get("url")][:6]
+    security = []
+    raw_security = data.get("components", {}).get("securitySchemes") if isinstance(data.get("components"), dict) else None
+    if isinstance(raw_security, dict):
+        for name, scheme in list(raw_security.items())[:10]:
+            scheme_type = scheme.get("type") if isinstance(scheme, dict) else None
+            security.append({"name": name, "type": scheme_type})
+    openapi_version = data.get("openapi") or data.get("swagger")
     return {
         "title": info.get("title"),
         "version": info.get("version"),
+        "spec_version": openapi_version,
         "path_count": len(paths) if isinstance(paths, dict) else None,
         "sample_paths": sample,
+        "http_methods": sorted(methods),
+        "servers": servers,
+        "security_schemes": security,
+        "has_auth": bool(security) or bool(data.get("security")),
     }
 
 
@@ -637,7 +682,7 @@ async def api_discovery(domain: str, limit: int = 60) -> dict:
                     if summary:
                         entry["summary"] = summary
                 return entry
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return {
                     "path": path,
                     "category": category,
@@ -726,7 +771,7 @@ async def well_known(domain: str) -> dict:
                             fields[key.strip().lower()] = value.strip()
                     entry["summary"] = fields
             return entry
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {"path": path, "status": None, "error": f"{type(exc).__name__}: {exc}", "found": False}
 
     results = await asyncio.gather(*(fetch(path) for path in WELL_KNOWN_PATHS))
@@ -795,7 +840,7 @@ def _cname_sync(host: str) -> list[str]:
     try:
         answers = dns.resolver.resolve(host, "CNAME", lifetime=6)
         return [str(item.target).rstrip(".").lower() for item in answers]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -867,13 +912,11 @@ async def subdomain_takeover_check(domain: str, limit: int = 100, deep: bool = F
                         break
                     if response.status_code == 200:
                         break
-                except Exception:  # noqa: BLE001
+                except Exception:
                     continue
             if matched:
                 risk = "high"
-            elif http_status is None or http_status >= 500:
-                risk = "potential"
-            elif http_status in (404, 410):
+            elif http_status is None or http_status >= 500 or http_status in (404, 410):
                 risk = "potential"
             else:
                 risk = "claimed"
@@ -980,7 +1023,7 @@ async def favicon_hash(url: str) -> dict:
                 href = (tag.get("href") or "").strip()
                 if href and ("icon" in rel or "apple-touch" in rel):
                     candidates.append(urljoin(target, href))
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     parsed = urlparse(target)
@@ -1020,7 +1063,7 @@ async def favicon_hash(url: str) -> dict:
                 "shodan_mmh3_unsigned": mmh3 & 0xFFFFFFFF,
                 "shodan_query": f"http.favicon.hash:{mmh3}",
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(f"{candidate}: {type(exc).__name__}")
             continue
 
@@ -1097,7 +1140,7 @@ async def cloud_bucket_check(bucket: str, provider: str = "auto") -> dict:
                 entry["public_listing"] = False
                 entry["note"] = "Bucket exists but listing is denied."
             results.append(entry)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             results.append({"provider": "aws_s3", "bucket": name, "error": f"{type(exc).__name__}: {exc}"})
 
     if provider in ("auto", "gcs", "google"):
@@ -1120,7 +1163,7 @@ async def cloud_bucket_check(bucket: str, provider: str = "auto") -> dict:
             if response.status_code == 404:
                 entry["exists"] = False
             results.append(entry)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             results.append({"provider": "google_cloud_storage", "bucket": name, "error": f"{type(exc).__name__}: {exc}"})
 
     if provider in ("auto", "azure") and azure_value:
@@ -1148,7 +1191,7 @@ async def cloud_bucket_check(bucket: str, provider: str = "auto") -> dict:
                     _xml_text(item, "Name") for item in root.findall(".//Blob")[:10]
                 ]
             results.append(entry)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             results.append({"provider": "azure_blob", "account": account, "container": container, "error": f"{type(exc).__name__}: {exc}"})
 
     public = [item for item in results if item.get("public_listing")]

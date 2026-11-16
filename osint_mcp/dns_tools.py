@@ -16,7 +16,7 @@ import dns.resolver
 import dns.reversename
 import dns.zone
 
-from .common import clip, error_result, guarded, normalize_target, request, utcnow
+from .common import clip, guarded, normalize_target, request, utcnow
 
 DATA_DIR = Path(__file__).with_name("data")
 WORDLIST_PATH = DATA_DIR / "subdomains.txt"
@@ -64,7 +64,7 @@ def _rdata(record_type: str, rdata) -> dict | str:
             return {"flags": rdata.flags, "tag": rdata.tag, "value": rdata.value}
         text = rdata.to_text()
         return text[:-1] if text.endswith(".") else text
-    except Exception:  # noqa: BLE001 - fall back to raw text
+    except Exception:
         return rdata.to_text()
 
 
@@ -97,7 +97,7 @@ async def dns_lookup(domain: str, record_type: str = "A") -> dict:
             nxdomain = True
         except (dns.resolver.NoAnswer, dns.resolver.NoNameservers):
             return
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors[rtype] = f"{type(exc).__name__}: {exc}"
 
     await asyncio.gather(*(one(rtype) for rtype in types))
@@ -189,7 +189,7 @@ async def dns_zone_transfer(domain: str) -> dict:
                     "count": len(rows),
                 }
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             message = str(exc) or "transfer refused"
             results.append({"nameserver": ns, "success": False, "error": f"{type(exc).__name__}: {message}"})
 
@@ -211,10 +211,7 @@ def _load_wordlist(custom: str) -> list[str]:
         else:
             words = [w for w in custom.replace(",", " ").split() if w]
     else:
-        if WORDLIST_PATH.is_file():
-            words = WORDLIST_PATH.read_text(encoding="utf-8", errors="ignore").split()
-        else:
-            words = []
+        words = WORDLIST_PATH.read_text(encoding="utf-8", errors="ignore").split() if WORDLIST_PATH.is_file() else []
     cleaned = []
     for word in words:
         word = word.strip().strip(".")
@@ -223,18 +220,43 @@ def _load_wordlist(custom: str) -> list[str]:
     return cleaned
 
 
+def _expand_permutations(words: list[str], limit: int = 3000) -> list[str]:
+    """Derive common label variants: api-dev / dev-api, api2, api-old, api-v2."""
+    env_words = ("dev", "test", "stage", "staging", "qa", "uat", "prod", "demo", "old", "new", "beta")
+    derived: set[str] = set()
+    # only permute the most common service words to keep the probe count sane
+    hot = {w for w in words if w in ("api", "app", "web", "www", "mail", "vpn", "admin", "dev", "test", "portal", "auth", "sso", "jenkins", "gitlab", "jira", "docs", "blog", "shop", "cdn", "db", "mysql", "postgres", "redis", "kibana", "grafana")}
+    for word in hot:
+        derived.add(f"{word}2")
+        derived.add(f"{word}-old")
+        derived.add(f"old-{word}")
+        derived.add(f"{word}-v2")
+        derived.add(f"{word}-internal")
+        derived.add(f"internal-{word}")
+        derived.add(f"{word}-private")
+        for env in env_words:
+            derived.add(f"{word}-{env}")
+            if env != word:
+                derived.add(f"{env}-{word}")
+    combined = words + sorted(derived)
+    return combined[:limit]
+
+
 @guarded
 async def subdomain_enum(
     domain: str,
     wordlist: str = "",
+    permutations: bool = False,
     concurrency: int = 80,
     timeout: float = 3.0,
 ) -> dict:
     """Brute-force subdomains of a domain using a built-in wordlist (or a custom one).
 
     `wordlist` may be a file path, a comma/space separated list, or empty for the
-    built-in ~300 entry list. Performs wildcard-DNS detection and filters wildcard
-    matches so results are not polluted. Passive alternative: crtsh_subdomains.
+    built-in 1280+ entry list. `permutations=True` also probes common derived
+    labels (e.g. `api-dev`, `api2`, `dev-api`). Performs wildcard-DNS detection
+    and filters wildcard matches so results are not polluted. Passive
+    alternative: crtsh_subdomains.
     """
     target = normalize_target(domain)
     if not target:
@@ -242,6 +264,8 @@ async def subdomain_enum(
     words = _load_wordlist(wordlist)
     if not words:
         return {"ok": False, "error": "no wordlist entries"}
+    if permutations:
+        words = _expand_permutations(words, limit=3000)
 
     resolver = _resolver(timeout)
     sem = asyncio.Semaphore(max(1, min(int(concurrency), 250)))
@@ -259,7 +283,7 @@ async def subdomain_enum(
     try:
         wildcard_ips = set(await resolve_ips(f"{random_label}.{target}"))
         wildcard_checked = True
-    except Exception:  # noqa: BLE001
+    except Exception:
         wildcard_ips = set()
 
     found: list[dict] = []
@@ -277,7 +301,7 @@ async def subdomain_enum(
                 if wildcard_ips and set(ips).issubset(wildcard_ips):
                     return
                 found.append({"subdomain": full, "ip": ips})
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return
 
     await asyncio.gather(*(check(word) for word in words))
@@ -311,7 +335,7 @@ async def _certspotter(domain: str) -> set[str] | None:
                 if name and (name == domain or name.endswith("." + domain)):
                     names.add(name)
         return names
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -337,7 +361,7 @@ async def crtsh_subdomains(domain: str, limit: int = 2000) -> dict:
                 data = response.json()
                 break
             last_error = f"HTTP {response.status_code}: {clip(response.text, 200)}"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
         await asyncio.sleep(1.5 * (attempt + 1))
 

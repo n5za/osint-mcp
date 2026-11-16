@@ -16,7 +16,7 @@ from .common import USER_AGENT, clip, guarded, request, utcnow
 def _json_or_none(response):
     try:
         return response.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -123,7 +123,7 @@ async def _grep_json_via_browser(url: str) -> dict | None:
                     if stripped.startswith(("{", "[")):
                         try:
                             return json.loads(stripped)
-                        except Exception:  # noqa: BLE001
+                        except Exception:
                             pass
                     await asyncio.sleep(0.6)
                 return None
@@ -186,7 +186,7 @@ async def grep_app_search(
         if not isinstance(data, dict):
             data = await _grep_json_via_browser(url)
             used_browser = True
-    except Exception:  # noqa: BLE001
+    except Exception:
         data = await _grep_json_via_browser(url)
         used_browser = True
 

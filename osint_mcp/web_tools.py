@@ -11,7 +11,6 @@ from .common import (
     ensure_url,
     guarded,
     headers_dict,
-    normalize_target,
     request,
     url_host,
     utcnow,
@@ -62,7 +61,7 @@ async def http_fetch(
     if headers:
         try:
             parsed_headers = json.loads(headers)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return {"ok": False, "error": "headers must be a JSON object string"}
 
     response = await request(
@@ -272,9 +271,7 @@ async def tech_fingerprint(url: str) -> dict:
 
     for name, signals in TECH_HEADERS.items():
         for signal in signals:
-            if signal[0] == "header" and len(signal) == 2 and signal[1] in headers:
-                add(name, f"header: {signal[1]}")
-            elif signal[0] == "header" and len(signal) == 3 and signal[2] in headers.get(signal[1], ""):
+            if (signal[0] == "header" and len(signal) == 2 and signal[1] in headers) or (signal[0] == "header" and len(signal) == 3 and signal[2] in headers.get(signal[1], "")):
                 add(name, f"header: {signal[1]}")
             elif signal[0] == "html" and signal[1] in lowered_body:
                 add(name, f"html: {signal[1]}")
@@ -326,7 +323,7 @@ async def extract_links(url: str, external_only: bool = False, limit: int = 500)
     params: dict[str, int] = {}
 
     def record(href: str) -> None:
-        from urllib.parse import urljoin, urlparse, parse_qs
+        from urllib.parse import parse_qs, urljoin, urlparse
 
         absolute = urljoin(str(response.url), href.strip())
         parsed = urlparse(absolute)

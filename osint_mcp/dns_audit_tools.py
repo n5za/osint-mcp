@@ -39,7 +39,7 @@ async def _records(name: str, kind: str) -> tuple[list[str], str | None]:
         return sorted(item.to_text() for item in answer), None
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         return [], None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return [], f"{type(exc).__name__}: {exc}"
 
 
@@ -84,7 +84,7 @@ async def _doh(provider: str, endpoint: str, domain: str, kind: str) -> dict:
         answers = sorted({str(item.get("data", "")).strip('"').rstrip(".")
                           for item in data.get("Answer", []) if item.get("data")})
         return {"provider": provider, "status": data["Status"], "answers": answers}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"provider": provider, "error": f"{type(exc).__name__}: {exc}"}
 
 

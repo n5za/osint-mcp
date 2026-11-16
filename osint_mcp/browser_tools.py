@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -13,7 +12,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Image
 from playwright.async_api import async_playwright
 
-from .common import SHOTS_DIR, USER_AGENT, clip, ensure_url, guarded, jsonable, url_host, utcnow
+from .common import SHOTS_DIR, USER_AGENT, assert_public_url, clip, ensure_url, guarded, jsonable, url_host, utcnow
 
 CHROME_CANDIDATES = [
     "/usr/bin/google-chrome-stable",
@@ -78,6 +77,7 @@ async def _launch(playwright):
 @asynccontextmanager
 async def _session(url: str, wait_ms: int = 1500):
     target = ensure_url(url)
+    await assert_public_url(target)
     async with async_playwright() as playwright:
         browser = await _launch(playwright)
         context = await browser.new_context(
@@ -220,7 +220,7 @@ async def browser_eval(url: str, expression: str, wait_ms: int = 1200) -> dict:
         serialized = jsonable(value)
         try:
             text = json.dumps(serialized, ensure_ascii=False, indent=2)
-        except Exception:  # noqa: BLE001
+        except Exception:
             text = str(serialized)
         return {
             "ok": True,

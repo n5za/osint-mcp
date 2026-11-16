@@ -9,14 +9,12 @@ import ssl
 import xml.etree.ElementTree as ET
 
 from cryptography import x509
-from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed25519, ed448, rsa
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
 
 from .common import (
     clip,
     ensure_url,
-    error_result,
     guarded,
-    headers_dict,
     normalize_target,
     request,
     utcnow,
@@ -100,7 +98,12 @@ async def domain_whois(domain: str) -> dict:
     }
 
 
-def _grab_certificate(host: str, port: int, timeout: float) -> tuple[bytes, tuple, str]:
+def _grab_certificate(host: str, port: int, timeout: float) -> tuple[bytes, list[bytes], tuple, str]:
+    """TLS handshake returning (leaf DER, chain DERs, cipher, version).
+
+    Chain collection uses the public get_verified_chain() API when available
+    (Python 3.13+) and degrades to leaf-only on older interpreters.
+    """
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
@@ -111,7 +114,30 @@ def _grab_certificate(host: str, port: int, timeout: float) -> tuple[bytes, tupl
             version = tls.version() or "unknown"
             if not der:
                 raise RuntimeError("server returned no certificate")
-            return der, cipher or (None, None, None), version
+            chain: list[bytes] = []
+            try:
+                verified = tls.get_verified_chain()  # Python 3.13+
+            except AttributeError:
+                verified = None
+            if not verified:
+                sslobj = getattr(tls, "_sslobj", None)  # older interpreters, private API
+                if sslobj is not None:
+                    try:
+                        verified = sslobj.get_verified_chain()
+                    except Exception:
+                        verified = None
+            if verified:
+                for link_cert in verified:
+                    try:
+                        chain.append(link_cert.public_bytes())
+                    except TypeError:
+                        try:
+                            chain.append(link_cert.public_bytes(x509.Certificate))
+                        except Exception:
+                            continue
+                    except Exception:
+                        continue
+            return der, chain, cipher or (None, None, None), version
 
 
 def _public_key_info(cert: x509.Certificate) -> dict:
@@ -127,15 +153,35 @@ def _public_key_info(cert: x509.Certificate) -> dict:
     return {"type": type(key).__name__}
 
 
+def _expiry_alerts(cert: x509.Certificate, days_left: int, self_signed: bool, public_key: dict) -> list[str]:
+    """Human-readable certificate health alerts."""
+    alerts: list[str] = []
+    if days_left < 0:
+        alerts.append(f"EXPIRED: certificate expired {-days_left} days ago")
+    elif days_left <= 7:
+        alerts.append(f"CRITICAL: certificate expires in {days_left} days")
+    elif days_left <= 30:
+        alerts.append(f"WARNING: certificate expires in {days_left} days")
+    if self_signed:
+        alerts.append("WARNING: self-signed certificate (no trusted CA)")
+    algo = cert.signature_algorithm_oid._name.lower()
+    if "sha1" in algo or "md5" in algo:
+        alerts.append(f"CRITICAL: weak signature algorithm ({cert.signature_algorithm_oid._name})")
+    if public_key.get("type") == "RSA" and isinstance(public_key.get("bits"), int) and public_key["bits"] < 2048:
+        alerts.append(f"CRITICAL: weak RSA key ({public_key['bits']} bits)")
+    return alerts
+
+
 @guarded
 async def ssl_certificate(host: str, port: int = 443) -> dict:
     """Inspect the live TLS certificate of a host: subject, issuer, SANs, validity.
 
     Returns days until expiry, whether it is currently valid and self-signed,
     signature algorithm, public-key info and negotiated TLS version/cipher.
+    Includes the served chain (when the Python build exposes it) and health alerts.
     """
     target = normalize_target(host)
-    der, cipher, tls_version = await asyncio.to_thread(_grab_certificate, target, int(port), 12.0)
+    der, chain_ders, cipher, tls_version = await asyncio.to_thread(_grab_certificate, target, int(port), 12.0)
     cert = x509.load_der_x509_certificate(der)
 
     try:
@@ -154,6 +200,29 @@ async def ssl_certificate(host: str, port: int = 443) -> dict:
 
     now = utcnow()
     days_left = (not_after - now).days
+    self_signed = cert.subject == cert.issuer
+    public_key = _public_key_info(cert)
+
+    chain: list[dict] = []
+    for index, link_der in enumerate(chain_ders):
+        try:
+            link = x509.load_der_x509_certificate(link_der)
+            try:
+                link_after = link.not_valid_after_utc
+            except AttributeError:
+                link_after = link.not_valid_after.replace(tzinfo=utcnow().tzinfo)
+            chain.append(
+                {
+                    "position": index,
+                    "subject": link.subject.rfc4514_string(),
+                    "issuer": link.issuer.rfc4514_string(),
+                    "not_after": link_after.isoformat(timespec="seconds"),
+                    "self_signed": link.subject == link.issuer,
+                }
+            )
+        except Exception:
+            continue
+
     return {
         "ok": True,
         "host": target,
@@ -166,13 +235,17 @@ async def ssl_certificate(host: str, port: int = 443) -> dict:
         "days_remaining": days_left,
         "valid": not_before <= now <= not_after,
         "expired": days_left < 0,
-        "self_signed": cert.subject == cert.issuer,
+        "self_signed": self_signed,
         "signature_algorithm": cert.signature_algorithm_oid._name,
-        "public_key": _public_key_info(cert),
+        "public_key": public_key,
         "san_dns": dns_names,
         "san_ip": ip_names,
         "tls_version": tls_version,
         "cipher": {"name": cipher[0], "protocol": cipher[1], "bits": cipher[2]},
+        "chain_length": len(chain_ders),
+        "chain": chain,
+        "chain_note": None if chain_ders else "chain unavailable on this Python build; leaf only",
+        "alerts": _expiry_alerts(cert, days_left, self_signed, public_key),
     }
 
 
@@ -184,7 +257,7 @@ async def _first_ok(urls: list[str], timeout: float = 15.0):
             if response.status_code < 400:
                 return url, response
             last_error = f"{url} -> HTTP {response.status_code}"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_error = f"{url} -> {type(exc).__name__}: {exc}"
     raise RuntimeError(last_error or "all URLs failed")
 
@@ -199,7 +272,7 @@ async def robots_txt(domain: str) -> dict:
     base = ensure_url(target).rstrip("/")
     try:
         url, response = await _first_ok([f"{base}/robots.txt", f"http://{target}/robots.txt"])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"ok": True, "found": False, "domain": target, "url": None, "note": str(exc)}
     text = response.text
 
@@ -247,7 +320,7 @@ async def security_txt(domain: str) -> dict:
         url, response = await _first_ok(
             [f"{base}/.well-known/security.txt", f"{base}/security.txt", f"http://{target}/.well-known/security.txt"]
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"ok": True, "found": False, "domain": target, "url": None, "note": str(exc)}
     fields: dict[str, list[str]] = {}
     for raw_line in response.text.splitlines():
@@ -264,7 +337,7 @@ async def security_txt(domain: str) -> dict:
             from datetime import datetime
 
             expired = datetime.fromisoformat(expires.replace("Z", "+00:00")) < utcnow()
-        except Exception:  # noqa: BLE001
+        except Exception:
             expired = None
 
     return {
@@ -319,12 +392,12 @@ async def sitemap_urls(domain: str, limit: int = 500) -> dict:
                     try:
                         child_response = await request(child, timeout=20.0)
                         locs.extend(_xml_locs(child_response.text))
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         errors.append(f"{child}: {type(exc).__name__}")
             else:
                 locs.extend(current)
             break
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(f"{candidate}: {type(exc).__name__}")
 
     if not found_url:
@@ -370,7 +443,7 @@ async def wayback_urls(
 
     last_error = ""
     response = None
-    for attempt in range(2):
+    for _attempt in range(2):
         try:
             response = await request(
                 "https://web.archive.org/cdx/search/cdx", params=params, timeout=90.0
@@ -378,7 +451,7 @@ async def wayback_urls(
             if response.status_code == 200:
                 break
             last_error = f"CDX HTTP {response.status_code}: {clip(response.text, 200)}"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
         await asyncio.sleep(2.0)
     if response is None or response.status_code != 200:
@@ -391,7 +464,7 @@ async def wayback_urls(
 
     try:
         rows = response.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {"ok": True, "domain": target, "count": 0, "urls": [], "note": clip(response.text, 300)}
 
     if not rows:
@@ -400,7 +473,7 @@ async def wayback_urls(
     header, data = rows[0], rows[1:]
     records = []
     for row in data:
-        item = dict(zip(header, row))
+        item = dict(zip(header, row, strict=False))
         records.append(
             {
                 "url": item.get("original"),

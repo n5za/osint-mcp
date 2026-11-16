@@ -41,7 +41,7 @@ _NS_CACHE: dict[str, tuple[float, list[str]]] = {}
 def _json_or_none(response) -> Any:
     try:
         return response.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -51,7 +51,7 @@ def _dt(value: Any) -> str | None:
         return None
     try:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(value)))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return str(value)
 
 
@@ -141,7 +141,7 @@ async def otx_domain(domain: str, limit: int = 50) -> dict:
         try:
             response = await request(url, headers=headers, timeout=45.0)
             return name, response.status_code, _json_or_none(response), clip(response.text, 300)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return name, 0, None, f"{type(exc).__name__}: {exc}"
 
     results = await asyncio.gather(*(fetch(name, url) for name, url in sections.items()))
@@ -461,7 +461,7 @@ def _kev_entry(cve_id: str) -> dict | None:
             response = request_sync_kev()
             cached = response
             cache_set("cisa_kev", cached)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
     for item in cached.get("vulnerabilities", []):
         if (item.get("cveID") or "").upper() == cve_id.upper():
@@ -506,7 +506,7 @@ async def cve_intel(cve_id: str) -> dict:
     async def circl():
         try:
             return await get_json(f"{CIRCL_CVE}/{cve}", timeout=45.0)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     async def epss():
@@ -514,7 +514,7 @@ async def cve_intel(cve_id: str) -> dict:
             data = await get_json(f"{EPSS_API}?cve={cve}", timeout=30.0)
             entries = (data or {}).get("data") or []
             return entries[0] if entries else None
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     async def nvd():
@@ -526,7 +526,7 @@ async def cve_intel(cve_id: str) -> dict:
             )
             items = (data or {}).get("vulnerabilities") or []
             return items[0].get("cve") if items else None
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     circl_data, epss_data, kev_data, nvd_data = await asyncio.gather(
@@ -661,9 +661,9 @@ def _zone_nameservers(zone: str) -> list[str]:
             try:
                 for address in dns.resolver.resolve(name, "A", lifetime=5):
                     ips.append(str(address))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
-    except Exception:  # noqa: BLE001
+    except Exception:
         ips = []
     if ips:
         _NS_CACHE[zone] = (time.time(), ips)
@@ -692,7 +692,7 @@ def _query_zone(zone: str, qname: str) -> dict:
             if codes:
                 return {"status": "listed", "codes": codes, "server": server}
             return {"status": "not_listed", "server": server}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
     return {"status": "error", "error": last_error or "all nameservers timed out"}
 
@@ -805,7 +805,7 @@ async def tor_exit_check(target: str) -> dict:
         try:
             infos = await asyncio.to_thread(socket.getaddrinfo, host, None, socket.AF_INET)
             ips = sorted({info[4][0] for info in infos})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {"ok": False, "error": f"cannot resolve {host}: {exc}"}
 
     exit_list = cache_get("tor_exit_list", ttl=1800)
@@ -1120,7 +1120,7 @@ async def _internetdb(ip: str) -> dict | None:
             "tags": (data.get("tags") or [])[:20],
             "vulns": (data.get("vulns") or [])[:30],
         }
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -1174,7 +1174,7 @@ async def threat_reputation(target: str) -> dict:
 
     keys = list(tasks)
     results = await asyncio.gather(*(tasks[key] for key in keys))
-    for key, result in zip(keys, results):
+    for key, result in zip(keys, results, strict=False):
         details[key] = result
 
     vt = details.get("virustotal") or {}

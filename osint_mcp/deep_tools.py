@@ -17,7 +17,6 @@ import time
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, quote, quote_plus, urlparse
 
-import numpy as np
 from bs4 import BeautifulSoup
 from PIL import ExifTags, Image
 from playwright.async_api import async_playwright
@@ -26,8 +25,13 @@ from .browser_tools import _launch, _shots_dir
 from .common import USER_AGENT, clip, ensure_url, guarded, request, utcnow
 
 try:
+    import numpy as np
+except Exception:
+    np = None
+
+try:
     import cv2
-except Exception:  # noqa: BLE001
+except Exception:
     cv2 = None
 
 
@@ -71,7 +75,7 @@ def _decode_bing(url: str) -> str:
                 decoded = base64.urlsafe_b64decode(payload).decode("utf-8")
                 if decoded.startswith(("http://", "https://")):
                     return decoded
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
     return url
 
@@ -175,7 +179,7 @@ async def _search_in_context(context, query: str, engine: str, limit: int) -> di
                 }
             body = (await page.inner_text("body"))[:500].lower()
             errors[name] = "no results" + (" (possible captcha)" if "captcha" in body else "")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors[name] = f"{type(exc).__name__}: {exc}"
         finally:
             await page.close()
@@ -195,7 +199,7 @@ async def browser_search(query: str, engine: str = "auto", limit: int = 10) -> d
         return {"ok": False, "error": "empty query"}
     limit = max(1, min(int(limit), 30))
     engine = (engine or "auto").strip().lower()
-    if engine not in ("auto",) + SEARCH_ENGINES:
+    if engine not in ("auto", *SEARCH_ENGINES):
         return {"ok": False, "error": f"engine must be one of auto, {', '.join(SEARCH_ENGINES)}"}
     async with _browser_context() as context:
         result = await _search_in_context(context, value, engine, limit)
@@ -299,7 +303,7 @@ CODE_TLDS = {
 
 
 def _tokens(value: str) -> set[str]:
-    return {token for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", (value or "").lower())}
+    return set(re.findall(r"[a-z0-9][a-z0-9_-]{2,}", (value or "").lower()))
 
 
 def _relevance(query: str, title: str, text: str) -> int:
@@ -513,7 +517,7 @@ async def _analyze_page(page, url: str, query: str, screenshot: bool = False) ->
             await page.evaluate("() => window.scrollTo(0, Math.min(document.body.scrollHeight, 1800))")
             await page.wait_for_timeout(700)
             await page.evaluate("() => window.scrollTo(0, 0)")
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         raw_images = await page.evaluate(
             """() => Array.from(document.images).map((img) => ({
@@ -531,9 +535,9 @@ async def _analyze_page(page, url: str, query: str, screenshot: bool = False) ->
             try:
                 await page.screenshot(path=str(path), full_page=False)
                 result["screenshot"] = str(path)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     return result
 
@@ -657,7 +661,7 @@ async def _fetch_text(url: str, query: str = "") -> dict:
             "key_sentences": _key_sentences(text, query, _extract_entities(text)),
             "entities": _extract_entities(f"{title or ''}\n{text}"),
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"url": url, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -677,7 +681,7 @@ async def source_crosscheck(sources: str, query: str = "") -> dict:
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             items = [str(item) for item in parsed]
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     if not items:
         items = [item.strip() for item in re.split(r"[\s,]+", raw) if item.strip()]
@@ -707,14 +711,14 @@ def _gps_decimal(values) -> float | None:
     try:
         degrees, minutes, seconds = (float(part) for part in values)
         return degrees + minutes / 60 + seconds / 3600
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
 def _extract_exif(image: Image.Image) -> tuple[dict, dict | None]:
     try:
         exif = image.getexif()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {}, None
     data = {}
     for tag_id, value in exif.items():
@@ -738,7 +742,7 @@ def _extract_exif(image: Image.Image) -> tuple[dict, dict | None]:
                     "lon": round(lon, 7),
                     "maps_url": f"https://www.google.com/maps?q={lat:.7f},{lon:.7f}",
                 }
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return data, gps
 
@@ -790,7 +794,7 @@ def _ocr_image(data: bytes) -> str | None:
         )
         text = (completed.stdout or "").strip()
         return clip(text, 4000) if text else None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     finally:
         if path:
@@ -819,14 +823,14 @@ def _decode_qr(data: bytes) -> list[str]:
             ok, values, _, _ = detector.detectAndDecodeMulti(array)
             if ok:
                 decoded.extend(value for value in values if value)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         if not decoded:
             value, _, _ = detector.detectAndDecode(array)
             if value:
                 decoded.append(value)
         return list(dict.fromkeys(decoded))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -910,7 +914,7 @@ async def image_analyze(
     """
     try:
         result = await _analyze_image(target, bool(ocr), bool(qr), bool(reverse_search))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"ok": False, "target": target, "error": f"{type(exc).__name__}: {exc}"}
     result["checked_at"] = utcnow().isoformat(timespec="seconds")
     return result
@@ -1005,7 +1009,7 @@ async def deep_osint(
             async with sem:
                 try:
                     analysis = await _analyze_image(item["src"], ocr=bool(ocr_images), qr=True, reverse=True)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     return {
                         "src": item["src"],
                         "alt": item.get("alt"),

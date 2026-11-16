@@ -90,10 +90,7 @@ def _safe_error(exc: BaseException) -> str:
 
 def _mask_email(email: str) -> str:
     local, domain = email.rsplit("@", 1)
-    if len(local) <= 2:
-        masked = local[0] + "***"
-    else:
-        masked = local[0] + "***" + local[-1]
+    masked = local[0] + "***" if len(local) <= 2 else local[0] + "***" + local[-1]
     return f"{masked}@{domain}"
 
 
@@ -261,7 +258,7 @@ async def _leakcheck_public(identifier: str, refresh: bool = False) -> dict:
             headers={"Accept": "application/json"},
             timeout=30.0,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "leakcheck_public",
             "status": "error",
@@ -274,7 +271,7 @@ async def _leakcheck_public(identifier: str, refresh: bool = False) -> dict:
 
     try:
         data = response.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "leakcheck_public",
             "status": "error",
@@ -414,7 +411,7 @@ async def _hudson_rock(kind: str, identifier: str, refresh: bool = False) -> dic
             headers={"Accept": "application/json"},
             timeout=35.0,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hudsonrock",
             "status": "error",
@@ -427,7 +424,7 @@ async def _hudson_rock(kind: str, identifier: str, refresh: bool = False) -> dic
 
     try:
         data = response.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hudsonrock",
             "status": "error",
@@ -516,7 +513,7 @@ async def _hibp_account(email: str) -> dict:
             headers=_hibp_headers(),
             timeout=30.0,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hibp",
             "status": "error",
@@ -538,7 +535,7 @@ async def _hibp_account(email: str) -> dict:
 
     try:
         data = response.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hibp",
             "status": "error",
@@ -608,7 +605,7 @@ async def _hibp_catalog(refresh: bool = False) -> tuple[list[dict] | None, dict 
             headers={"Accept": "application/json", "User-Agent": "osint-mcp/1.0"},
             timeout=45.0,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return None, {
             "status": "error",
             "error": _safe_error(exc),
@@ -619,7 +616,7 @@ async def _hibp_catalog(refresh: bool = False) -> tuple[list[dict] | None, dict 
 
     try:
         data = response.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return None, {
             "status": "error",
             "error": _safe_error(exc),
@@ -1001,7 +998,7 @@ async def _hibp_domain_aggregate(domain: str) -> dict:
             headers=_hibp_headers(),
             timeout=35.0,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hibp_domain",
             "status": "error",
@@ -1024,7 +1021,7 @@ async def _hibp_domain_aggregate(domain: str) -> dict:
 
     try:
         data = response.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hibp_domain",
             "status": "error",
@@ -1072,7 +1069,7 @@ async def _hibp_stealer_by_email(email: str) -> dict:
             headers=_hibp_headers(),
             timeout=35.0,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hibp_stealer_logs",
             "status": "error",
@@ -1095,7 +1092,7 @@ async def _hibp_stealer_by_email(email: str) -> dict:
 
     try:
         data = response.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hibp_stealer_logs",
             "status": "error",
@@ -1134,7 +1131,7 @@ async def _hibp_stealer_domain_aggregate(domain: str) -> dict:
             headers=_hibp_headers(),
             timeout=40.0,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hibp_stealer_domain",
             "status": "error",
@@ -1157,7 +1154,7 @@ async def _hibp_stealer_domain_aggregate(domain: str) -> dict:
 
     try:
         data = response.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
             "provider": "hibp_stealer_domain",
             "status": "error",
