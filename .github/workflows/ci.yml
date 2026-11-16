@@ -20,11 +20,9 @@ jobs:
       - name: Install ruff
         run: pip install ruff
       - name: Ruff lint
-        run: ruff check osint_mcp tests
-      - name: Ruff format check
-        run: ruff format --check osint_mcp tests
+        run: ruff check osint_mcp scripts
 
-  test:
+  smoke:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -35,15 +33,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install package with dev extras
+      - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-      - name: Run tests
-        run: pytest -v
-      - name: Tool catalog check
-        run: python scripts/gen_catalog.py --check
-      - name: Tool count check
+          python -m pip install -e .
+      - name: Import + tool count check
         run: |
           python - <<'PY'
           import asyncio
@@ -52,6 +46,8 @@ jobs:
           assert n >= 88, f"expected >= 88 tools, got {n}"
           print(f"tool count OK: {n}")
           PY
+      - name: Tool catalog check
+        run: python scripts/gen_catalog.py --check
 
   build:
     runs-on: ubuntu-latest

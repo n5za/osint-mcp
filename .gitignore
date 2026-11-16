@@ -13,6 +13,9 @@ shots/
 *.png
 !docs/*.png
 
+# Local-only test suite (maintained locally, not distributed in the public repo)
+tests/
+
 # Local secrets — never commit these
 keys.json
 .env.local

@@ -40,13 +40,9 @@ image = [
     "opencv-python>=4.9.0",
 ]
 dev = [
-    "pytest>=8.0.0",
-    "respx>=0.21.0",
     "ruff>=0.5.0",
     "mypy>=1.10.0",
     "types-beautifulsoup4",
-    "numpy>=1.26.0",
-    "opencv-python-headless>=4.9.0",
 ]
 
 [project.urls]
@@ -92,10 +88,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011", "SIM115"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
 
 [tool.mypy]
 python_version = "3.10"

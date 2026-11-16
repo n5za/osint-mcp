@@ -30,8 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `doctor` tool and `osint-mcp doctor` CLI: checks keys, browser, database, and dependencies.
   - Optional `[image]` extra: OpenCV/NumPy are no longer required for the base install.
 - **Project health**
-  - GitHub Actions CI: ruff + pytest across Python 3.10–3.13.
-  - Public test suite (previously git-ignored) with mocked HTTP via respx.
+  - GitHub Actions CI: ruff lint, import + tool-count smoke checks on Python 3.10–3.13, generated-catalog staleness check, and a build/twine job.
   - `SECURITY.md`, `CONTRIBUTING.md`, and this changelog.
   - `keys.example.json` now includes `greynoise` (previously documented but missing).
 
